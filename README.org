@@ -15,8 +15,41 @@ a graphics card provides. In theory this computing approach should yield a much 
 architectures. The strenghts of CUDA is efficient unification of blocks and advanced parallelism of operations.
 
 ** OpenGL
-
+The application will be established using [[https://www.opengl.org/][OpenGL]]. OpenGL will enforce various paradigms regarding visualization, grid- and boundary creation. Furthermore it will be  intervened
+with CUDA to optimize the computation of the applications features.
 
 ** NixOS
+[[https://nixos.org/][NixOS]] let's one use a specifically designed build environment for software. The dependencies needed for this project are all stored in *shell.nix*. If one would like
+to use the deposited code of this repository the usage of *nix* ensures that no dependencies are missed. At the end the same application would be compiled on another machine.
 
 ** Literate Programming
+[[http://www.literateprogramming.com/Literate][Literate Programming]] is as the computation of Maxwell's equations for solving certain types of electromagnetic problems  in the same spirit as illuminating people to understand
+programming code. Using Emacs as an IDE allows the usage of [[https://orgmode.org/][org-mode]], which is a powerful workhorse(actually it's a unicorn) on the organization and documentation of one's projects and workflows.
+One striking feature is the usage of code blocks:
+
+#+begin_src cpp
+#include <iostream>
+#include <string>
+int main() {
+	std::cout << "You know it's cool!.\n";
+	std::cout << std::endl;
+	std::cout << "          }   {         ___ " << std::endl;
+	std::cout << "          (o o)        (o o) " << std::endl;
+	std::cout << "   /-------\\ /          \\ /-------\\ " << std::endl;
+	std::cout << "  / | BULL |O            O| COW  | \\ " << std::endl;
+	std::cout << " *  |-,--- |              |------|  * " << std::endl;
+	std::cout << "    ^      ^              ^      ^ " << std::endl;
+  std::cout << std::endl;
+  return 0;
+    }
+#+end_src
+
+#+RESULTS:
+| You       | know | it's  | cool!.    |   |   |        |   |   |   |   |   |
+|           |      |       |           |   |   |        |   |   |   |   |   |
+| }         | {    | ___   |           |   |   |        |   |   |   |   |   |
+| (o        | o)   | (o    | o)        |   |   |        |   |   |   |   |   |
+| /-------\ | /    | \     | /-------\ |   |   |        |   |   |   |   |   |
+| *         |      | -,--- |           |   |   | ------ |   | * |   |   |   |
+| ^         | ^    | ^     | ^         |   |   |        |   |   |   |   |   |
+|           |      |       |           |   |   |        |   |   |   |   |   |
