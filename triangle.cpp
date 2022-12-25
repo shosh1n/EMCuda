@@ -1,13 +1,12 @@
 
 /**
- * From the OpenGL Programming wikibook:
+ * Following along the Tutorials From:
  * http://en.wikibooks.org/wiki/OpenGL_Programming This file is in the public
  * domain. Contributors: Sylvain Beucler
  */
+#include <GL/glew.h>
 #include <stdio.h>
 #include <stdlib.h>
-/* Use glew.h instead of gl.h to get all the GL prototypes declared */
-#include <GL/glew.h>
 /* Using the GLUT library for the base windowing setup */
 #include <GL/freeglut.h>
 
