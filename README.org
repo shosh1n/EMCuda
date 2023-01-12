@@ -53,3 +53,146 @@ int main() {
 | *         |      | -,--- |           |   |   | ------ |   | * |   |   |   |
 | ^         | ^    | ^     | ^         |   |   |        |   |   |   |   |   |
 |           |      |       |           |   |   |        |   |   |   |   |   |
+
+
+* Solving Maxwell's Equations for a 2D-Waveguide using CUDA/C
+#+begin_src cuda
+#include "cuda.h"
+#include <thrust/iterator/counting_iterator.h>
+#include <thrust/device_vector.h>
+#include <stdio.h>
+#include <math.h>
+#include <iostream>
+float micrometers = 1;
+float nanometers  = 1e-3 * micrometers;
+
+/****************************************/
+// DASHBOARD
+/****************************************/
+
+//WAVELENGTH AND MODE
+float lam0 = 1.55 * micrometers;
+char MODE = 'H';
+
+//SLAB WAVEGUIDE
+float a  = 1500 * nanometers;
+float n1 = 1.0;
+float n2 = 2.0;
+float n3 = 1.5;
+
+//GRID PARAMETERS
+float nmax = n2;
+float NRES = 20;
+float b    = 3*lam0;
+
+//NUMBER OF MODES TO CALCULATE
+float NMODES = 4;
+
+float _mean;
+
+__device__ float mean(float xin[]){
+        float sum;
+        float number =  sizeof(xin)/sizeof(float);
+
+        for(int i = 0; i < number; i++){
+            sum += xin[i];
+        }
+        float _mean = sum/number;
+        return _mean;
+}
+
+
+
+//CALCULATE TOTAL GRID SIZE
+//float _Nx = ceil(_Sx/_dx);
+
+//GRID AXIS
+//_xa = [1:_Nx]*_dx;
+//_xa = xa - mean(xa);
+
+    //2X GRID
+//_Nx2 = 2*_Nx;
+//_dx2 = _dx/2;
+
+
+
+int main( void ) {
+    //FIRST GUESS AT GRID RESOLUTION
+    float _dx = lam0/nmax/NRES;
+
+
+    //SNAP GRID TO CRITICAL DIMENSION
+    float _nx = ceil(a/_dx);
+    _dx = a/_nx;
+
+
+    //CALCULATE TOTAL GRID SIZE
+    float _Sx = b+a+b;
+    float _Nx = ceil(_Sx/_dx);
+    _Sx = _Nx*_dx;
+
+
+    //GRID AXIS
+    thrust::counting_iterator<float> iter(1);
+    thrust::device_vector<float> vec(_Nx);
+    thrust::copy(iter, iter + vec.size(), vec.begin());
+    printf("%f", _dx);
+    printf("\n");
+
+    thrust::transform(vec.begin(), vec.end(), thrust::make_constant_iterator(_dx), vec.begin(),
+                      thrust::multiplies<float>());
+
+    thrust::device_vector<float>vec2(_Nx);
+    thrust::copy(thrust::device, vec.begin(), vec.end(), vec2.begin());
+
+    float _sum = thrust::reduce(vec.begin(), vec.end())/_Nx;
+
+    thrust::transform(vec2.begin(), vec2.end(), thrust::make_constant_iterator(_sum), vec2.begin(),
+                      thrust::minus<float>());
+
+    // 2X GIRD
+    float _Nx2 = 2*_Nx;
+    float _dx2 =  _dx/2;
+
+    /************BUILD SLAB WAVEGUIDE ONTO GRID************/
+
+    //INITIALIZE TO FREE SPACE
+    int _2NX = 2 * _Nx;
+
+    thrust::device_vector<float> vecE2(_2NX);
+    thrust::fill(vecE2.begin(), vecE2.end(), 1);
+
+    thrust::device_vector<float> vecU2(_2NX);
+    thrust::fill(vecU2.begin(), vecU2.end(), 1);
+
+
+    //CALCULATE START AND STOP ARRAY INDICES
+    float _nx1 = 1 + ceil(b/_dx2);
+    float _nx2 =  _nx1 + round(a/_dx2);
+
+    float test = vecE2[1];
+    //BUILD SLABWAVEGUIDE
+    thrust::transform(vecE2.begin(), vecE2.begin()+_nx1-1, thrust::make_constant_iterator(n1), vecE2.begin(),
+                      thrust::multiplies<float>());
+
+    thrust::transform(vecE2.begin()+_nx1, vecE2.begin()+(_nx1+_nx2), thrust::make_constant_iterator(n2), vecE2.begin()+_nx1,
+                      thrust::multiplies<float>());
+
+    thrust::transform(vecE2.begin()+_nx2+1, vecE2.end(), thrust::make_constant_iterator(n1), vecE2.begin()+_nx2+1,
+                      thrust::multiplies<float>());
+
+    for(thrust::device_vector<float>::iterator iter = vecE2.begin(); iter != vecE2.end(); iter++)
+        {
+                std::cout << *iter << std::endl;
+        }
+    printf("%f", _nx2);
+    printf("\n");
+    printf("%f", _nx1);
+    printf("\n");
+    printf("%i", _2NX);
+    printf("\n");
+    return 0;
+
+
+}
+#+end_src
