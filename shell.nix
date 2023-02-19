@@ -16,6 +16,7 @@ pkgs.mkShell {
       export CUDA_PATH=${pkgs.cudatoolkit}
       export SDL2_PATH=${pkgs.SDL2}
       export GLEW_PATH=${pkgs.glew}
+      export GLU_PATH=${pkgs.libGLU} 
       export GLUT_PATH=${pkgs.freeglut}
       export LD_LIBRARY_PATH=${pkgs.linuxPackages.nvidia_x11}/lib:${pkgs.ncurses5}/lib:${pkgs.libGLU}/lib
       export EXTRA_LDFLAGS="-L/lib -L${pkgs.linuxPackages.nvidia_x11}/lib"

@@ -1,7 +1,9 @@
+#include <algorithm>
 #include <cublas.h>
 #include <iostream>
 #include <math.h>
 #include <string.h>
+#include <thrust/complex.h>
 #include <thrust/device_vector.h>
 #include <thrust/execution_policy.h>
 #include <thrust/for_each.h>
@@ -12,24 +14,12 @@
 #include <thrust/iterator/transform_iterator.h>
 #include <thrust/iterator/zip_iterator.h>
 #include <thrust/partition.h>
+#include <thrust/fill.h>
+#include <thrust/transform.h>
 #include <thrust/scatter.h>
 #include <thrust/sequence.h>
 #include <thrust/tuple.h>
-#include <thrust/complex.h>
 
-// Matrix Multiplication works as follows:
-// 1. input the Arrays d_A, and
-// 2.d_B that needs to be used
-// 3. input the designated Array that shall be computed
-// 4. set for the m colmuns of d_A
-// 5. set for the n rows of d_B
-// 6. set for the offset for elements in d_A that needs to be respected to
-// stencil out the Matrix shape in row-major scheme EXAMPLE: <letter>o</letter>
-// = 4 for a Matrix d_A that is 4x2
-// 6. set the row-major offest for the Matrix d_B using <letter>p</letter>
-// 7. set the variable in the for-loop to the deepest increment in the
-// respective dimension
-//  Template structure to pass to kernel
 
 template <typename Iterator> class strided_range {
 public:
@@ -46,6 +36,7 @@ public:
       return stride * i;
     }
   };
+
 
   typedef typename thrust::counting_iterator<difference_type> CountingIterator;
   typedef typename thrust::transform_iterator<stride_functor, CountingIterator>
@@ -75,37 +66,47 @@ protected:
   difference_type stride;
 };
 
-__global__ void MatrixMulKernel(float *d_A, float *d_B, float *d_C, int m,
-                                int n, int o, int p) {
-
-  int row = blockIdx.y * blockDim.y + threadIdx.y;
-  int col = blockIdx.x * blockDim.x + threadIdx.x;
-
-  if ((row < p) && (col < p)) {
-    float d_cValue = 0;
+// SPARSE MATRIX DIVISION
+struct sparseDivision
+{
+    __host__ __device__
+    thrust::tuple<float,float> operator()(const thrust::tuple<float,float>& spMat, const thrust::tuple<float> &divi) const
     {
-      for (int i = 0; i < p; ++i) {
-        d_cValue += d_A[row * o + i] * d_B[i * p + col];
-      }
+      auto out = thrust::make_tuple(thrust::get<0>(spMat)/thrust::get<0>(divi),thrust::get<1>(spMat)/thrust::get<0>(divi));
+      return out;
     }
-    d_C[row * p + col] = d_cValue;
-  }
-}
-struct diag_index : public thrust::unary_function<int, int> {
-  diag_index(int rows) : rows(rows) {}
 
-  __host__ __device__ int operator()(const int index) const {
-    return (index + rows * (index % rows));
-  }
-
-  const int rows;
 };
 
-void diag(float *v_in, float *m_out) {
+// SPARSE MATRIX MULTIPLICATION
+__global__ void SpMM(float *d_A, float *d_B, float *d_C, int p, int *d_row_ptr, int *d_col_ptr)
+{
+    float transfer;
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
 
-  int v_size = sizeof(v_in) / sizeof(float);
-  thrust::device_vector<float> mat(v_size * v_size);
+
+    if ((row < p))
+        {
+
+        float temp = 0;
+        int offst = 0;
+
+        if(row >0)
+        {
+            offst = 1;
+        }
+
+        int row_start = d_row_ptr[row];
+        int row_end = d_row_ptr[row+1];
+
+        for(int j = row_start; j < row_end; ++j)
+        {
+            temp += d_A[j-offst] * d_B[d_col_ptr[j-2*offst]];
+        }
+        d_C[row] = temp;
+        }
 }
+
 
 template <typename V>
 
@@ -118,41 +119,6 @@ void print_matrix(const V &A, int nr_rows_A, int nr_cols_A) {
     std::cout << std::endl;
   }
   std::cout << std::endl;
-}
-
-template <typename T> struct KernelArray {
-  T *_array;
-  int _size;
-
-  // constructor allows for implicit conversion
-  KernelArray(thrust::device_vector<T> &dVec) {
-    _array = thrust::raw_pointer_cast(&dVec[0]);
-    _size = (int)dVec.size();
-  }
-};
-
-__global__ void createVector(float *d_A, float *d_C, int m, int n) {
-  int row = blockIdx.y * blockDim.y + threadIdx.y;
-  int col = blockIdx.x * blockDim.x + threadIdx.x;
-  if ((row < m) && (col < n)) {
-    d_C[row * n + col] = 1;
-  }
-}
-
-__global__ void setElem(float *d_A, int start, int end, float d_a) {
-  for (int i = start; i < end; ++i) {
-    d_A[i] = d_a;
-  }
-}
-
-__global__ void diagM(float *d_A, float *d_B, int off) {
-  for (int i = 0; i < off; ++i) {
-    for (int j = 0; j < off; ++j) {
-      if (j == i) {
-        d_B[i] = d_A[j];
-      }
-    }
-  }
 }
 
 float micrometers = 1;
@@ -185,9 +151,6 @@ float Nx = ceil(Sx / dx);
 
 //<---------------------Execute-------------------->
 
-dim3 threads(141, 141);
-dim3 blocks(2, 2);
-
 int main() {
 
   dx = a / nx;
@@ -198,7 +161,7 @@ int main() {
 
   int Nx2 = 2 * Nx;
   float dx2 = dx / 2;
-  int size = Nx2 / 2;
+  int size = 281;
   //  thrust::fill(xa.begin(), xa.end(),1);
 
   // CREATE X-AXIS
@@ -233,9 +196,9 @@ int main() {
 
   // BUILD SLAB WAVEGUIDE
   // E-FIELD
-  thrust::fill(ER2.begin(), ER2.begin() + (nx1), n1);
-  thrust::fill(ER2.begin() + nx1, ER2.end() - nx2, n2);
-  thrust::fill(ER2.end() - (nx2), ER2.end(), n3);
+  thrust::fill(ER2.begin(), ER2.begin() + (nx1), n1*n1);
+  thrust::fill(ER2.begin() + nx1, ER2.end() - nx2, n2*n2);
+  thrust::fill(ER2.end() - (nx2), ER2.end(), n3*n3);
 
   // BUILD SLAB WAVEGUIDE
   // M-FIELD
@@ -254,7 +217,7 @@ int main() {
   // CREATE VECTORS B.C. of TO BE ABLE TO TYPECAST PROPERPLY
   thrust::device_vector<float> dERxx(size);
   thrust::device_vector<float> dERyy(size);
-  thrust::device_vector<float> dERzz(size);
+  thrust::host_vector<float> dERzz(size);
 
   thrust::device_vector<float> dURxx(size);
   thrust::device_vector<float> dURyy(size);
@@ -263,7 +226,7 @@ int main() {
   // COPY THE ITERATORS INTO VECTOR CONTAINERS
   thrust::copy(thrust::device, ERxx.begin(), ERxx.end(), dERxx.begin());
   thrust::copy(thrust::device, ERyy.begin(), ERyy.end(), dERyy.begin());
-  thrust::copy(thrust::device, ERzz.begin(), ERzz.end(), dERzz.begin());
+  thrust::copy(thrust::host, ERzz.begin(), ERzz.end(), dERzz.begin());
 
   thrust::copy(thrust::device, URxx.begin(), URxx.end(), dURxx.begin());
   thrust::copy(thrust::device, URyy.begin(), URyy.end(), dURyy.begin());
@@ -280,11 +243,11 @@ int main() {
 
   // BUILD DERIVATIVE MATRICES
   float k0 = 2 * M_PI / lam0;
-  int NS[2] = {Nx, 1};
+  float NS[2] = {Nx, 1};
   float RES[2] = {dx, 1};
   int BC[2] = {0, 0};
 
-  int d_Ns[2] = {Nx, 1};
+  float d_Ns[2] = {Nx, 1};
 
   int Nx = d_Ns[0];
   int Ny = d_Ns[1];
@@ -296,40 +259,119 @@ int main() {
 
   int M = Nx * Ny;
 
-  //Zero Matrix
-  //thrust::device_vector<float> d_Z(M * M);
 
-  //print_matrix(d_Z, M, M);
+//BUILD DEX
+  thrust::host_vector<float>mid_Diag(size);
+  thrust::host_vector<float>top_Diag(size);
 
+  thrust::fill(mid_Diag.begin(), mid_Diag.end(), -1);
+  thrust::fill(top_Diag.begin(), top_Diag.end(), 1);
 
-  //CENTER DIAGONAL
-  thrust::device_vector<float> d0(M);
-  thrust::fill(d0.begin(), d0.end(), -1);
+  //thrust::transform(sub_Diag.begin(), sub_Diag.end(), thrust::make_constant_iterator(dx), sub_Diag.begin(), thrust::divides<float>());
+  thrust::transform(mid_Diag.begin(), mid_Diag.end(), thrust::make_constant_iterator(dx), mid_Diag.begin(), thrust::divides<float>());
+  thrust::transform(top_Diag.begin(), top_Diag.end(), thrust::make_constant_iterator(dx), top_Diag.begin(), thrust::divides<float>());
 
-  //UPPER DIAGONAL
-  thrust::device_vector<float> d1(M);
-  thrust::fill(d1.begin(), d1.end(), 1);
+//BUILD DHX
+  thrust::host_vector<float>subDH_Diag(size);
 
-  //CREATE A SPARSE MATRIX REPRESENTATION
-  thrust::device_vector<float> DEX(2*size-1);
-  thrust::device_vector<float> DHX(2*size-1);
+  thrust::host_vector<float>midDH_Diag(size);
 
-  DHX = DEX;
-  thrust::fill(DEX.begin(), DEX.end(), 1);
-  thrust::fill(DEX.begin(), DEX.end(), -1);
+  thrust::fill(subDH_Diag.begin(), subDH_Diag.end(), -1);
+  thrust::fill(midDH_Diag.begin(), midDH_Diag.end(), 1);
 
-
-  thrust::transform(DEX.begin(), DEX.end(),thrust::make_constant_iterator(dx), DEX.begin(), thrust::divides<float>());
-  thrust::transform(DHX.begin(), DHX.end(),thrust::make_constant_iterator(dx), DHX.begin(), thrust::divides<float>());
-  //
-  //thrust::copy(dERzz.begin(), dERzz.end(), std::ostream_iterator<float>(std::cout, " "));
-
-  // get the Determinante then do A= -(DEX/ERzz * DHX +ERyy)
+  thrust::transform(subDH_Diag.begin(), subDH_Diag.end(), thrust::make_constant_iterator(dx), subDH_Diag.begin(), thrust::divides<float>());
+  thrust::transform(midDH_Diag.begin(), midDH_Diag.end(), thrust::make_constant_iterator(dx), midDH_Diag.begin(), thrust::divides<float>());
 
 
+//PREPARE DIVISION  DEX/ERzz
+//
+
+  typedef thrust::host_vector<float>::iterator midDiag;
+  typedef thrust::host_vector<float>::iterator topDiag;
+
+  typedef thrust::tuple<midDiag,topDiag> IteratorTuple;
+  typedef thrust::zip_iterator<IteratorTuple> ZipIterator;
+
+  ZipIterator zipper(thrust::make_tuple(subDH_Diag.begin(), midDH_Diag.begin()));
+
+  auto d_DEX_begin =  thrust::make_zip_iterator(thrust::make_tuple(&mid_Diag[0], &top_Diag[0]));
+  auto d_DEX_end =  thrust::make_zip_iterator(thrust::make_tuple(&mid_Diag[size], &top_Diag[size]));
+
+  auto d_ERzz_begin = thrust::make_zip_iterator(thrust::make_tuple(&dERzz[0]));
+  auto d_ERzz_end   = thrust::make_zip_iterator(thrust::make_tuple(&dERzz[size]));
+
+  thrust::host_vector<float> h_topResOut(size);
+  thrust::host_vector<float> h_midResOut(size);
+
+  thrust::zip_iterator<thrust::tuple<
+  thrust::host_vector<float>::iterator,
+  thrust::host_vector<float>::iterator>> zip_begin(thrust::make_tuple(mid_Diag.begin(), top_Diag.begin()));
+
+  thrust::zip_iterator<thrust::tuple<
+  thrust::host_vector<float>::iterator,
+  thrust::host_vector<float>::iterator>> zip_end(thrust::make_tuple(mid_Diag.end(), top_Diag.end()));
+
+  auto d_divRes_begin = thrust::make_zip_iterator(thrust::make_tuple(h_midResOut.begin(), h_topResOut.begin()));
+  auto d_divRes_end = thrust::make_zip_iterator(thrust::make_tuple(h_midResOut.end(), h_topResOut.end()));
+
+  //GET THE DIVISION FUNCTOR READY AND DIVIDE
+  sparseDivision divByERzz;
+
+  thrust::transform(zip_begin, zip_end, d_ERzz_begin, d_divRes_begin, divByERzz);
+
+  thrust::host_vector<float> reduceZipRes;
+
+  thrust::for_each(d_divRes_begin, d_divRes_end,
+                   [&reduceZipRes] (const thrust::tuple<float, float>& tup)
+                   {
+                       reduceZipRes.push_back(thrust::get<0>(tup));
+                       reduceZipRes.push_back(thrust::get<1>(tup));
+                   });
+
+  //DO THE MULTIPLICATION
+
+  // 1. CREATE THE ARRAYS OUT OF TU
+  // {
+  // PLE STRUCTURE
+  // 2. CREATE THE row_prt and col_ptr ARRAYS
+
+  // 3. FEED INTO THE SPARSE MATRIX MULTIPLICATION
+
+//sizeof(thrust::get<0>(spMat)
 
 
 
 
+  thrust::host_vector<float> keyseq0(size*2);
+  thrust::host_vector<float> keyseq1(size*2);
+
+  thrust::sequence(thrust::host,keyseq0.begin(), keyseq0.end(), 1);
+  thrust::sequence(thrust::host,keyseq1.begin(), keyseq1.end(), 1);
+
+
+  typedef thrust::host_vector<float>::iterator Iter;
+  strided_range<Iter>key0(keyseq0.begin(), keyseq0.end(), 2);
+  strided_range<Iter>key1(keyseq1.begin()+1, keyseq1.end(), 2);
+
+
+  thrust::host_vector<float> outkey1(size);
+  thrust::device_vector<float> values1(size);
+
+  thrust::host_vector<float> outkey2(size);
+  thrust::device_vector<float> values2(size);
+
+  thrust::copy(key0.begin(), key0.end(), outkey1.begin());
+  thrust::copy(key1.begin(), key1.end(), outkey2.begin());
+
+
+
+
+  for(int i = 0; i < size*2; ++i)
+      {
+          std::cout << reduceZipRes[i]  << " ";
+      }
+ // //thrust::copy(d_divRes.begin(), d_divRes.end(), std::ostream_iterator<float>(std::cout, " "));
+ // thrust::for_each
+ //std::cout << d.size()  << std::endl;
   return 0;
 }
