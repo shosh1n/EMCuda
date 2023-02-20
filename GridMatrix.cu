@@ -79,34 +79,114 @@ struct sparseDivision
 };
 
 // SPARSE MATRIX MULTIPLICATION
-__global__ void SpMM(float *d_A, float *d_B, float *d_C, int p, int *d_row_ptr, int *d_col_ptr)
+
+__global__ void SpMM(float *d_A, float *d_B, float *d_C, int barrier, int* d_elem_scan, int *d_row_ptr, int *d_col_ptr)
 {
     float transfer;
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    int focus = blockIdx.x * blockDim.x + threadIdx.x;
 
 
-    if ((row < p))
+    if ((focus < barrier))
         {
 
         float temp = 0;
         int offst = 0;
 
-        if(row >0)
+        int d_elem_start = d_elem_scan[focus];
+        int d_elem_end = d_elem_scan[focus+1];
+
+        for(int elem = d_elem_start; elem < d_elem_end; ++elem)
         {
-            offst = 1;
+            temp += d_A[d_row_ptr[elem]] * d_B[d_col_ptr[elem]];
         }
+        d_C[focus] = temp;
+        }
+    }
 
-        int row_start = d_row_ptr[row];
-        int row_end = d_row_ptr[row+1];
-
-        for(int j = row_start; j < row_end; ++j)
+    void CreateRow_Ptr(int* h_rows, int *out_rows ,int row_size)
         {
-            temp += d_A[j-offst] * d_B[d_col_ptr[j-2*offst]];
+            out_rows  = h_rows;
+            int input = 1;
+            for (int  i = 0; i < 840; i+=2)
+            {
+                if(i == 0)
+                    {
+                    out_rows[i] = 0;
+                    }
+                for(int k = 1; k < 3; ++k)
+                    {
+                        out_rows[i+k] = input;
+                    }
+                ++input;
+            }
         }
-        d_C[row] = temp;
-        }
-}
 
+     void CreateCol_Ptr(int* h_cols, int* out_cols)
+     {
+
+        out_cols = h_cols;
+        //col_ptr --start
+        int elem1 = 1;
+        int elem2 = 1;
+        int barrier = 4;
+        bool trigger;
+
+            for(int j = 0; j < 840; j +=4)
+            {
+                //set 0. Element to 0
+                if(j == 0)
+                    {
+                    out_cols[j] = 0;
+                    }
+
+                //balancing
+                for(int k = 1; k < 5; ++k)
+                    {
+                    if((barrier == 2) && (trigger == true))
+                        {
+                            barrier = 0;
+                        }
+
+                    if(barrier > 2)
+                        {
+                            out_cols[j+k] = elem1;
+                            ++elem1;
+                            --barrier;
+                            trigger = true;
+                        }
+                    else if(barrier <= 2)
+                            {
+                            out_cols[j+k] = elem2;
+                            ++barrier;
+                            ++elem2;
+                            trigger = false;
+                            }
+                    }
+                barrier = 4;
+            }
+        }
+
+
+void CreateElem_Scan(int *h_elem_scan, int *out_elem_scan, int size)
+     {
+         out_elem_scan = h_elem_scan;
+        //start elem_scan
+        int incr = 1;
+
+        for(int i = 0; i < size ; i+=3)
+           {
+            if(i == 0)
+              {
+               out_elem_scan[i] = 0;
+              }
+
+            for(int k = 1; k < 4; ++k )
+               {
+                out_elem_scan[i+k] = incr+k;
+               }
+            incr+=4;
+           }
+     }
 
 template <typename V>
 
