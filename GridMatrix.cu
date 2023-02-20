@@ -413,12 +413,20 @@ int main() {
   thrust::copy(h_Bvec.begin(), h_Bvec.end(), d_Bvec.begin());
   //DO THE MULTIPLICATION
 
-  // 1. CREATE THE ARRAYS OUT OF TU
-  // {
-  // PLE STRUCTURE
-  // 2. CREATE THE row_prt and col_ptr ARRAYS
-
-  // 3. FEED INTO THE SPARSE MATRIX MULTIPLICATION
+  // 1. TWO MATRICES ARE NEEDED
+  //
+  // 2. THESE ARE SPARSE MATRICES MULTUPLY THEM BY THEIRS PATTERN
+  //    - SO FIRST CREATE THE RIGHT row_ptr AND col_ptr RESPECTIVELY
+  //    - FEED THEM INTO THE SPARSE-MATRIX CUDA-KERNEL
+  //
+  // 3. CAREFUL THERE ARE TWO MORE STEPS TWO DO:
+  //    - INVERT the ERxx-MATRIX
+  //    - ADD TWO THE RESULT OF THE MATRIX-MULTIPLICATION THE URyy-MATRIX
+  //    - THEN YOU'RE DONE!<2023-02-20 Mon> shoshin
+  //
+  // 4. OBTAIN THE RESULT
+  //    - YOU MIGHT HAVE TO EXTEND THE TAIL OF THE RESULT BY 281 COPY-ELEMENTS
+  // 5. WHY? ->> SEE NEXT SECTION!
 
 //sizeof(thrust::get<0>(spMat)
 
@@ -476,6 +484,13 @@ int main() {
   free(row_ptr);
   free(col_ptr);
   free(elem_scan);
+
+  //INVOKE THE CUDA-SOLVER
+  //1. FEED THE MATRICES
+  //2. ...
+  //3. OBTAIN THE EIGENVALUES OF THE MATRIX
+
+
  // //thrust::copy(d_divRes.begin(), d_divRes.end(), std::ostream_iterator<float>(std::cout, " "));
  // thrust::for_each
  //std::cout << d.size()  << std::endl;
