@@ -103,73 +103,70 @@ __global__ void SpMM(float *d_A, float *d_B, float *d_C, int barrier, int* d_ele
         }
     }
 
-    void CreateRow_Ptr(int* h_rows, int *out_rows ,int row_size)
+void CreateRow_Ptr(int* h_rows,int size)
+     {
+        int input = 1;
+        for (int  i = 0; i < size; i+=2)
         {
-            out_rows  = h_rows;
-            int input = 1;
-            for (int  i = 0; i < 840; i+=2)
-            {
-                if(i == 0)
-                    {
-                    out_rows[i] = 0;
-                    }
-                for(int k = 1; k < 3; ++k)
-                    {
-                        out_rows[i+k] = input;
-                    }
-                ++input;
-            }
+            if(i == 0)
+                {
+                h_rows[i] = 0;
+                }
+            for(int k = 1; k < 3; ++k)
+                {
+                    h_rows[i+k] = input;
+                }
+            ++input;
         }
+     }
 
-     void CreateCol_Ptr(int* h_cols, int* out_cols)
+void CreateCol_Ptr(int* h_cols, int size)
+     {
+       //col_ptr --start
+       int elem1 = 1;
+       int elem2 = 1;
+       int barrier = 4;
+       bool trigger;
+
+           for(int j = 0; j < size; j +=4)
+           {
+           //set 0. Element to 0
+           if(j == 0)
+               {
+               h_cols[j] = 0;
+               }
+
+           //balancing
+           for(int k = 1; k < 5; ++k)
+               {
+               if((barrier == 2) && (trigger == true))
+                   {
+                       barrier = 0;
+                   }
+
+               if(barrier > 2)
+                   {
+                       h_cols[j+k] = elem1;
+                       ++elem1;
+                       --barrier;
+                       trigger = true;
+                   }
+               else if(barrier <= 2)
+                       {
+                       h_cols[j+k] = elem2;
+                       ++barrier;
+                       ++elem2;
+                       trigger = false;
+                       }
+               }
+           barrier = 4;
+           }
+          }
+
+
+void CreateElem_Scan(int *h_elem_scan, int size)
      {
 
-        out_cols = h_cols;
-        //col_ptr --start
-        int elem1 = 1;
-        int elem2 = 1;
-        int barrier = 4;
-        bool trigger;
-
-            for(int j = 0; j < 840; j +=4)
-            {
-                //set 0. Element to 0
-                if(j == 0)
-                    {
-                    out_cols[j] = 0;
-                    }
-
-                //balancing
-                for(int k = 1; k < 5; ++k)
-                    {
-                    if((barrier == 2) && (trigger == true))
-                        {
-                            barrier = 0;
-                        }
-
-                    if(barrier > 2)
-                        {
-                            out_cols[j+k] = elem1;
-                            ++elem1;
-                            --barrier;
-                            trigger = true;
-                        }
-                    else if(barrier <= 2)
-                            {
-                            out_cols[j+k] = elem2;
-                            ++barrier;
-                            ++elem2;
-                            trigger = false;
-                            }
-                    }
-                barrier = 4;
-            }
-        }
-
-
-void CreateElem_Scan(int *h_elem_scan, int *out_elem_scan, int size)
-     {
-         out_elem_scan = h_elem_scan;
         //start elem_scan
         int incr = 1;
 
@@ -177,12 +174,16 @@ void CreateElem_Scan(int *h_elem_scan, int *out_elem_scan, int size)
            {
             if(i == 0)
               {
-               out_elem_scan[i] = 0;
+               h_elem_scan[i] = 0;
               }
 
             for(int k = 1; k < 4; ++k )
                {
-                out_elem_scan[i+k] = incr+k;
+                h_elem_scan[i+k] = incr+k;
+                if(i+k >= size-2)
+                    {
+                        h_elem_scan[i+k] = size-2;
+                    }
                }
             incr+=4;
            }
@@ -315,12 +316,6 @@ int main() {
   thrust::device_vector<float> dERxx2(size * size);
   thrust::copy(thrust::device, ERxx.begin(), ERxx.end(), dERxx2.begin());
 
-  float *d_C; // *d_A, *d_B;
-
-  //   cudaMalloc(&d_A, size*sizeof(int));
-  //   cudaMalloc(&d_B, size*sizeof(int));
-  cudaMalloc(&d_C, size * size * sizeof(int));
-
   // BUILD DERIVATIVE MATRICES
   float k0 = 2 * M_PI / lam0;
   float NS[2] = {Nx, 1};
@@ -399,15 +394,23 @@ int main() {
 
   thrust::transform(zip_begin, zip_end, d_ERzz_begin, d_divRes_begin, divByERzz);
 
-  thrust::host_vector<float> reduceZipRes;
+  thrust::host_vector<float> h_Avec;
 
-  thrust::for_each(d_divRes_begin, d_divRes_end,
-                   [&reduceZipRes] (const thrust::tuple<float, float>& tup)
+  thrust::for_each(d_divRes_begin, d_divRes_end-1,
+                   [&h_Avec] (const thrust::tuple<float, float>& tup)
                    {
-                       reduceZipRes.push_back(thrust::get<0>(tup));
-                       reduceZipRes.push_back(thrust::get<1>(tup));
+                       h_Avec.push_back(thrust::get<0>(tup));
+                       h_Avec.push_back(thrust::get<1>(tup));
                    });
 
+  thrust::host_vector<float> h_Bvec(h_Avec.size());
+  thrust::copy(h_Avec.begin(), h_Avec.end(), h_Bvec.begin());
+
+  thrust::device_vector<float> d_Avec(h_Avec.size());
+  thrust::device_vector<float> d_Bvec(h_Avec.size());
+
+  thrust::copy(h_Avec.begin(), h_Avec.end(), d_Avec.begin());
+  thrust::copy(h_Bvec.begin(), h_Bvec.end(), d_Bvec.begin());
   //DO THE MULTIPLICATION
 
   // 1. CREATE THE ARRAYS OUT OF TU
@@ -419,37 +422,60 @@ int main() {
 
 //sizeof(thrust::get<0>(spMat)
 
+  int* row_ptr;
+  int* col_ptr;
+  int* elem_scan;
+
+  int ptr_size = 564;
+  row_ptr   = (int *)malloc(ptr_size*sizeof(int));
+  col_ptr   = (int *)malloc(ptr_size*sizeof(int));
+  elem_scan = (int *)malloc(ptr_size*sizeof(int));
+
+  float* d_C ;
+
+  float* d_A = thrust::raw_pointer_cast(d_Avec.data());
+  float* d_B = thrust::raw_pointer_cast(d_Bvec.data());
+  //cudaMemcpy(&d_A, &h_A, 2*size*sizeof(float), cudaMemcpyHostToDevice);
+
+  CreateElem_Scan(elem_scan,ptr_size);
+  CreateCol_Ptr(col_ptr, ptr_size);
+  CreateRow_Ptr(row_ptr, ptr_size);
+
+  int* d_col_ptr;
+  int* d_row_ptr;
+  int* d_elem_scan;
+
+  cudaMalloc((void**) &d_col_ptr, ptr_size*sizeof(int));
+  cudaMalloc((void**) &d_row_ptr, ptr_size*sizeof(int));
+  cudaMalloc((void**) &d_elem_scan, ptr_size*sizeof(int));
+
+  cudaMalloc((void**) &d_C, ptr_size*sizeof(float));
+
+  cudaMemcpy(d_col_ptr, col_ptr, ptr_size*sizeof(int), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_row_ptr, row_ptr, ptr_size*sizeof(int), cudaMemcpyHostToDevice);
+  cudaMemcpy(d_elem_scan, elem_scan, ptr_size*sizeof(int), cudaMemcpyHostToDevice);
+
+  SpMM<<<1,ptr_size>>>(thrust::raw_pointer_cast(&d_Avec[0]),thrust::raw_pointer_cast(&d_Bvec[0]), d_C, ptr_size, d_elem_scan, d_row_ptr, d_col_ptr);
+
+  float* h_C;
+  h_C = (float *)malloc(3*size*sizeof(float));
+
+  cudaMemcpy(h_C, d_C, ptr_size*sizeof(float), cudaMemcpyDeviceToHost);
 
 
-
-  thrust::host_vector<float> keyseq0(size*2);
-  thrust::host_vector<float> keyseq1(size*2);
-
-  thrust::sequence(thrust::host,keyseq0.begin(), keyseq0.end(), 1);
-  thrust::sequence(thrust::host,keyseq1.begin(), keyseq1.end(), 1);
-
-
-  typedef thrust::host_vector<float>::iterator Iter;
-  strided_range<Iter>key0(keyseq0.begin(), keyseq0.end(), 2);
-  strided_range<Iter>key1(keyseq1.begin()+1, keyseq1.end(), 2);
-
-
-  thrust::host_vector<float> outkey1(size);
-  thrust::device_vector<float> values1(size);
-
-  thrust::host_vector<float> outkey2(size);
-  thrust::device_vector<float> values2(size);
-
-  thrust::copy(key0.begin(), key0.end(), outkey1.begin());
-  thrust::copy(key1.begin(), key1.end(), outkey2.begin());
-
-
-
-
-  for(int i = 0; i < size*2; ++i)
+  size_t n = sizeof(h_C)/sizeof(h_C[0]);
+  for(int i = 0; i < ptr_size-3; ++i)
       {
-          std::cout << reduceZipRes[i]  << " ";
+        std::cout << h_C[i] << " ";
       }
+  cudaFree(d_col_ptr);
+  cudaFree(d_row_ptr);
+  cudaFree(d_elem_scan);
+  cudaFree(d_C);
+
+  free(row_ptr);
+  free(col_ptr);
+  free(elem_scan);
  // //thrust::copy(d_divRes.begin(), d_divRes.end(), std::ostream_iterator<float>(std::cout, " "));
  // thrust::for_each
  //std::cout << d.size()  << std::endl;
