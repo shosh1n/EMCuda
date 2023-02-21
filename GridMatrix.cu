@@ -486,6 +486,9 @@ int main() {
         std::cout << inv_dERzz[i] << ", " ;
       }
 
+  //MISSING + ADDITION ON MID-DIAGONAL AND MULTIPLY BY -1
+
+
   cudaFree(d_col_ptr);
   cudaFree(d_row_ptr);
   cudaFree(d_elem_scan);
