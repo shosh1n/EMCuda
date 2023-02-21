@@ -417,32 +417,28 @@ int main() {
   //
   // 2. THESE ARE SPARSE MATRICES MULTUPLY THEM BY THEIRS PATTERN
   //    - SO FIRST CREATE THE RIGHT row_ptr AND col_ptr RESPECTIVELY
-  //    - FEED THEM INTO THE SPARSE-MATRIX CUDA-KERNEL
+  //    - FEED THEM INTO THE SPARSE-MATRIX CUDA-KERNEL - DONE <2023-02-21 Tue>
   //
   // 3. CAREFUL THERE ARE TWO MORE STEPS TWO DO:
   //    - INVERT the ERxx-MATRIX
   //    - ADD TWO THE RESULT OF THE MATRIX-MULTIPLICATION THE URyy-MATRIX
   //    - THEN YOU'RE DONE!<2023-02-20 Mon> shoshin
-  //
-  // 4. OBTAIN THE RESULT
-  //    - YOU MIGHT HAVE TO EXTEND THE TAIL OF THE RESULT BY 281 COPY-ELEMENTS
-  // 5. WHY? ->> SEE NEXT SECTION!
 
-//sizeof(thrust::get<0>(spMat)
 
   int* row_ptr;
   int* col_ptr;
   int* elem_scan;
 
-  int ptr_size = 564;
-  row_ptr   = (int *)malloc(ptr_size*sizeof(int));
-  col_ptr   = (int *)malloc(ptr_size*sizeof(int));
-  elem_scan = (int *)malloc(ptr_size*sizeof(int));
+  int ptr_size = 841;
+  int ptr_size_buffer = 841+2;
+  row_ptr   = (int *)malloc(ptr_size_buffer*sizeof(int));
+  col_ptr   = (int *)malloc(ptr_size_buffer*sizeof(int));
+  elem_scan = (int *)malloc(ptr_size_buffer*sizeof(int));
 
   float* d_C ;
 
-  float* d_A = thrust::raw_pointer_cast(d_Avec.data());
-  float* d_B = thrust::raw_pointer_cast(d_Bvec.data());
+  //float* d_A = thrust::raw_pointer_cast(d_Avec.data());
+  //float* d_B = thrust::raw_pointer_cast(d_Bvec.data());
   //cudaMemcpy(&d_A, &h_A, 2*size*sizeof(float), cudaMemcpyHostToDevice);
 
   CreateElem_Scan(elem_scan,ptr_size);
@@ -464,17 +460,17 @@ int main() {
   cudaMemcpy(d_elem_scan, elem_scan, ptr_size*sizeof(int), cudaMemcpyHostToDevice);
 
   SpMM<<<1,ptr_size>>>(thrust::raw_pointer_cast(&d_Avec[0]),thrust::raw_pointer_cast(&d_Bvec[0]), d_C, ptr_size, d_elem_scan, d_row_ptr, d_col_ptr);
-
+//
   float* h_C;
   h_C = (float *)malloc(3*size*sizeof(float));
 
   cudaMemcpy(h_C, d_C, ptr_size*sizeof(float), cudaMemcpyDeviceToHost);
 
 
-  size_t n = sizeof(h_C)/sizeof(h_C[0]);
-  for(int i = 0; i < ptr_size-3; ++i)
+  //size_t n = sizeof(h_C)/sizeof(h_C[0]);
+  for(int i = 0; i < ptr_size; ++i)
       {
-        std::cout << h_C[i] << " ";
+        std::cout << h_C[i] << ", " ;
       }
   cudaFree(d_col_ptr);
   cudaFree(d_row_ptr);
@@ -484,6 +480,7 @@ int main() {
   free(row_ptr);
   free(col_ptr);
   free(elem_scan);
+//sizeof(thrust::get<0>(spMat)
 
   //INVOKE THE CUDA-SOLVER
   //1. FEED THE MATRICES
