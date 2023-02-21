@@ -189,6 +189,19 @@ void CreateElem_Scan(int *h_elem_scan, int size)
            }
      }
 
+
+struct vectorInversion
+{
+    __host__ __device__
+    float operator()(const float& vec) const
+    {
+      auto out = 1/vec;
+      return out;
+    }
+
+};
+
+
 template <typename V>
 
 void print_matrix(const V &A, int nr_rows_A, int nr_cols_A) {
@@ -411,6 +424,7 @@ int main() {
 
   thrust::copy(h_Avec.begin(), h_Avec.end(), d_Avec.begin());
   thrust::copy(h_Bvec.begin(), h_Bvec.end(), d_Bvec.begin());
+
   //DO THE MULTIPLICATION
 
   // 1. TWO MATRICES ARE NEEDED
@@ -418,12 +432,6 @@ int main() {
   // 2. THESE ARE SPARSE MATRICES MULTUPLY THEM BY THEIRS PATTERN
   //    - SO FIRST CREATE THE RIGHT row_ptr AND col_ptr RESPECTIVELY
   //    - FEED THEM INTO THE SPARSE-MATRIX CUDA-KERNEL - DONE <2023-02-21 Tue>
-  //
-  // 3. CAREFUL THERE ARE TWO MORE STEPS TWO DO:
-  //    - INVERT the ERxx-MATRIX
-  //    - ADD TWO THE RESULT OF THE MATRIX-MULTIPLICATION THE URyy-MATRIX
-  //    - THEN YOU'RE DONE!<2023-02-20 Mon> shoshin
-
 
   int* row_ptr;
   int* col_ptr;
@@ -467,11 +475,17 @@ int main() {
   cudaMemcpy(h_C, d_C, ptr_size*sizeof(float), cudaMemcpyDeviceToHost);
 
 
+  vectorInversion vecInv;
+
+  thrust::host_vector <float> inv_dERzz(size);
+
+  thrust::transform(dERzz.begin(), dERzz.end(), inv_dERzz.begin(), vecInv);
   //size_t n = sizeof(h_C)/sizeof(h_C[0]);
-  for(int i = 0; i < ptr_size; ++i)
+  for(int i = 0; i < size -2; ++i)
       {
-        std::cout << h_C[i] << ", " ;
+        std::cout << inv_dERzz[i] << ", " ;
       }
+
   cudaFree(d_col_ptr);
   cudaFree(d_row_ptr);
   cudaFree(d_elem_scan);
@@ -482,6 +496,7 @@ int main() {
   free(elem_scan);
 //sizeof(thrust::get<0>(spMat)
 
+//**************COMPUTE THE EIGENVALUES!**************
   //INVOKE THE CUDA-SOLVER
   //1. FEED THE MATRICES
   //2. ... MORE FROM PREVIOUS COMMENT COMING SOON <2023-02-20 Mon> shoshin
