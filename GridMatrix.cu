@@ -19,7 +19,10 @@
 #include <thrust/scatter.h>
 #include <thrust/sequence.h>
 #include <thrust/tuple.h>
-
+#include <vector>
+#include <cusolverSp.h>
+#include <cusparse.h>
+#include "cusolver_utils.h"
 
 template <typename Iterator> class strided_range {
 public:
@@ -82,113 +85,143 @@ struct sparseDivision
 
 __global__ void SpMM(float *d_A, float *d_B, float *d_C, int barrier, int* d_elem_scan, int *d_row_ptr, int *d_col_ptr)
 {
-    float transfer;
-    int focus = blockIdx.x * blockDim.x + threadIdx.x;
-
-
+int focus = blockIdx.x * blockDim.x + threadIdx.x;
     if ((focus < barrier))
         {
 
         float temp = 0;
-        int offst = 0;
-
+        int k = 0;
         int d_elem_start = d_elem_scan[focus];
         int d_elem_end = d_elem_scan[focus+1];
 
-        for(int elem = d_elem_start; elem < d_elem_end; ++elem)
+        int elem = d_elem_end - d_elem_start;
+        for(int i = 0; i < elem; i++)
         {
-            temp += d_A[d_row_ptr[elem]] * d_B[d_col_ptr[elem]];
+          //this is a temp fix because otherwise the wrong col-element gets pulled
+          //A fix will be implemented within generalized upcoming linear algebra routines
+          if(i==1)
+          {
+            temp += d_A[d_row_ptr[focus+i]] * d_B[d_col_ptr[focus+i+1]];
+          }
+
+         else
+         {
+            temp += d_A[d_row_ptr[focus+i]] * d_B[d_col_ptr[focus+i]];
+         }
+            //DEBUGGING
+            //uncomment to see why the fix above is neccessary; the root of the problems lies within the combination of threading and loop-increment
+            //printf(" thread: %i  row: %i  col: %i  inc: %i escan: %i temp: %f \n", focus,d_row_ptr[focus +i], d_col_ptr[focus +i], i, elem, temp );
         }
         d_C[focus] = temp;
         }
     }
 
-void CreateRow_Ptr(int* h_rows,int size)
-     {
-        int input = 1;
-        for (int  i = 0; i < size; i+=2)
+void DiagAdd(float *diagonal, float* addMe, int diagSize )
+{
+
+    for(int diagIdx = 0; diagIdx < diagSize; ++diagIdx)
         {
-            if(i == 0)
-                {
-                h_rows[i] = 0;
-                }
-            for(int k = 1; k < 3; ++k)
-                {
-                    h_rows[i+k] = input;
-                }
-            ++input;
+                if(diagIdx % 3 == 0)
+                        {
+                            diagonal[diagIdx] =diagonal[diagIdx] + addMe[diagIdx/3];
+                        }
         }
-     }
+}
 
-void CreateCol_Ptr(int* h_cols, int size)
+//// Sequences for Matrix-Elements outside of CUDA-Kernels
+//void CreateRow_Ptr(int* h_rows,int size)
+//     {
+//        int input = 1;
+//        for (int  i = 0; i < size; i+=2)
+//        {
+//            if(i == 0)
+//                {
+//                h_rows[i] = 0;
+//                }
+//            for(int k = 1; k < 3; ++k)
+//                {
+//                    h_rows[i+k] = input;
+//                }
+//            ++input;
+//        }
+//     }
+//
+//void CreateCol_Ptr(int* h_cols, int size)
+//     {
+//         bool focus;
+//         int barrier = 4;
+//         int elem1 = 1;
+//         int elem2 = 1;
+//
+//         h_cols[0] =0;
+//         int i = 1;
+//
+//         while(i < size)
+//         {
+//             if(barrier > 2)
+//             {
+//                 h_cols[i] = elem1;
+//                 ++elem1;
+//                 barrier--;
+//                 focus = false;
+//                 ++i;
+//             }
+//
+//             if(barrier == 2)
+//             {
+//                 if(focus == false)
+//                     barrier = 0;
+//
+//                 if(focus == true)
+//                     barrier = 4;
+//             }
+//
+//             if( barrier < 2)
+//             {
+//                 h_cols[i] = elem2;
+//                 ++elem2;
+//                 ++barrier;
+//                 focus = true;
+//                 ++i;
+//             }
+//
+//         }
+//     }
+//
+//
+void CreateElem_Scan(int *elem_list, int size)
      {
-       //col_ptr --start
-       int elem1 = 1;
-       int elem2 = 1;
-       int barrier = 4;
-       bool trigger;
+        int offset = 2;
+        int inc = 0;
+        int i = 0;
+        while (i < size)
+        {
 
-           for(int j = 0; j < size; j +=4)
-           {
-           //set 0. Element to 0
-           if(j == 0)
-               {
-               h_cols[j] = 0;
-               }
-
-           //balancing
-           for(int k = 1; k < 5; ++k)
-               {
-               if((barrier == 2) && (trigger == true))
-                   {
-                       barrier = 0;
-                   }
-
-               if(barrier > 2)
-                   {
-                       h_cols[j+k] = elem1;
-                       ++elem1;
-                       --barrier;
-                       trigger = true;
-                   }
-               else if(barrier <= 2)
-                       {
-                       h_cols[j+k] = elem2;
-                       ++barrier;
-                       ++elem2;
-                       trigger = false;
-                       }
-               }
-           barrier = 4;
-           }
-          }
-
-
-void CreateElem_Scan(int *h_elem_scan, int size)
-     {
-
-        //start elem_scan
-        int incr = 1;
-
-        for(int i = 0; i < size ; i+=3)
-           {
             if(i == 0)
-              {
-               h_elem_scan[i] = 0;
-              }
+                {
+                    elem_list[i]=0;
+                    ++i;
+                }
 
-            for(int k = 1; k < 4; ++k )
-               {
-                h_elem_scan[i+k] = incr+k;
-                if(i+k >= size-2)
-                    {
-                        h_elem_scan[i+k] = size-2;
-                    }
-               }
-            incr+=4;
-           }
+
+            if(offset == 2)
+            {
+                inc +=2;
+                elem_list[i] = inc;
+                offset = 0;
+                ++i;
+            }
+
+            else
+            {
+                ++inc;
+                elem_list[i] =inc;
+                ++offset;
+                ++i;
+            }
+        }
+
      }
-
 
 struct vectorInversion
 {
@@ -200,7 +233,6 @@ struct vectorInversion
     }
 
 };
-
 
 template <typename V>
 
@@ -215,47 +247,87 @@ void print_matrix(const V &A, int nr_rows_A, int nr_cols_A) {
   std::cout << std::endl;
 }
 
-float micrometers = 1;
-float nanometers = 1e-3 * micrometers;
-// WAVELENGTH AND MODE
-float lam0 = 1.55 * micrometers; //
-char MODE = 'H';
+//Sequence for Col-Elements in threading scheme
+void kernelCols(int *cols, int size)
+{
+    int barrier = 1;
+    int even = 2;
+    int normal = 0;
+    for(int i = 0;  i < size; ++i)
+        {
+            if((barrier) !=2 || (i == 0) ){
+                cols[i] = normal;
+                ++normal;
+                ++barrier;
+                }
 
-// SLAB WAVEGUIDE
-float a = 1500 * nanometers;
-float n1 = 1.0;
-float n2 = 2.0;
-float n3 = 1.5;
+            else if((barrier == 2) &&( i != 0))
+            {
+                    cols[i]  = even;
+                    barrier=0;
+                    even+=2;
+            }
+            }
+}
 
-// GRID PARAMETERS
-float nmax = n2;
-float NRES = 20;    // 56.888990026/2;
-float b = 3 * lam0; // 3
+//Sequence for Row-Elements in threading scheme
+void kernelRows(int *rows, int size)
+    {
 
-// NUMBER OF MODES TO CALCULATE
-float NMODES = 4;
-
-int m = 1;
-
-float dx = lam0 / nmax / NRES;
-float nx = ceil(a / dx);
-
-float Sx = b + a + b;
-float Nx = ceil(Sx / dx);
+    int inc = 0;
+    int k = 0;
+    while(k <size)
+        {
+            if((k!=0)&&(k%3==0))
+                {
+                rows[k] = inc-1;
+                ++k;
+                }
+            rows[k]=inc;
+            ++inc;
+            ++k;
+            }
+    }
 
 //<---------------------Execute-------------------->
 
 int main() {
 
+  float micrometers = 1;
+  float nanometers = 1e-3 * micrometers;
+
+  // WAVELENGTH AND MODE
+  float lam0 = 1.55 * micrometers; //
+  char MODE = 'H';
+
+  // SLAB WAVEGUIDE
+  float a = 1500 * nanometers;
+  float n1 = 1.0;
+  float n2 = 2.0;
+  float n3 = 1.5;
+
+  // GRID PARAMETERS
+  float nmax = n2;
+  float NRES = 20;    // 56.888990026/2;
+  float b = 3 * lam0; // 3
+
+  // NUMBER OF MODES TO CALCULATE
+  float NMODES = 4;
+
+  int m = 1;
+
+  float dx = lam0 / nmax / NRES;
+  float nx = ceil(a / dx);
+
   dx = a / nx;
 
-  Sx = Nx * dx;
-  Nx = ceil(Sx / dx);
-  Sx = Nx * dx;
+  float Sx = b + a + b;
+  float Nx = ceil(Sx / dx);
+   Sx = Nx * dx;
 
   int Nx2 = 2 * Nx;
   float dx2 = dx / 2;
-  int size = 281;
+  int size = Nx;
   //  thrust::fill(xa.begin(), xa.end(),1);
 
   // CREATE X-AXIS
@@ -290,9 +362,9 @@ int main() {
 
   // BUILD SLAB WAVEGUIDE
   // E-FIELD
-  thrust::fill(ER2.begin(), ER2.begin() + (nx1), n1*n1);
-  thrust::fill(ER2.begin() + nx1, ER2.end() - nx2, n2*n2);
-  thrust::fill(ER2.end() - (nx2), ER2.end(), n3*n3);
+  thrust::fill(ER2.begin(), ER2.begin() + 2*(nx1-1), n1*n1);
+  thrust::fill(ER2.begin() + 2*(nx1-1), ER2.end() - (nx2-2), n2*n2);
+  thrust::fill(ER2.end() - (nx2-2), ER2.end(), n3*n3);
 
   // BUILD SLAB WAVEGUIDE
   // M-FIELD
@@ -314,7 +386,7 @@ int main() {
   thrust::host_vector<float> dERzz(size);
 
   thrust::device_vector<float> dURxx(size);
-  thrust::device_vector<float> dURyy(size);
+  thrust::host_vector<float> dURyy(size);
   thrust::device_vector<float> dURzz(size);
 
   // COPY THE ITERATORS INTO VECTOR CONTAINERS
@@ -322,9 +394,11 @@ int main() {
   thrust::copy(thrust::device, ERyy.begin(), ERyy.end(), dERyy.begin());
   thrust::copy(thrust::host, ERzz.begin(), ERzz.end(), dERzz.begin());
 
+  thrust::fill(dURyy.begin(), dURyy.end(), 1);
   thrust::copy(thrust::device, URxx.begin(), URxx.end(), dURxx.begin());
-  thrust::copy(thrust::device, URyy.begin(), URyy.end(), dURyy.begin());
+  //thrust::copy(thrust::device, URyy.begin(), URyy.end(), dURyy.begin());
   thrust::copy(thrust::device, URzz.begin(), URzz.end(), dURzz.begin());
+
 
   thrust::device_vector<float> dERxx2(size * size);
   thrust::copy(thrust::device, ERxx.begin(), ERxx.end(), dERxx2.begin());
@@ -337,10 +411,9 @@ int main() {
 
   float d_Ns[2] = {Nx, 1};
 
-  int Nx = d_Ns[0];
+   Nx = d_Ns[0];
   int Ny = d_Ns[1];
 
-  float dx = lam0 / nmax / NRES;
   float dy = RES[1];
 
   float kinc[2] = {0, 0};
@@ -385,19 +458,32 @@ int main() {
   auto d_DEX_begin =  thrust::make_zip_iterator(thrust::make_tuple(&mid_Diag[0], &top_Diag[0]));
   auto d_DEX_end =  thrust::make_zip_iterator(thrust::make_tuple(&mid_Diag[size], &top_Diag[size]));
 
+  thrust::host_vector<float> h_Bvec;
+
+    thrust::for_each(d_DEX_begin, d_DEX_end,
+                   [&h_Bvec] (const thrust::tuple<float, float>& tup)
+                   {
+                       h_Bvec.push_back(thrust::get<0>(tup));
+                       h_Bvec.push_back(thrust::get<1>(tup));
+                   });
+
+
+  thrust::transform(h_Bvec.begin(), h_Bvec.end(), thrust::make_constant_iterator(-1), h_Bvec.begin(), thrust::multiplies<float>());
+  thrust::device_vector<float> d_Bvec(562);
+  thrust::copy(h_Bvec.begin(), h_Bvec.end()-1, d_Bvec.begin());
+
+
+
+
   auto d_ERzz_begin = thrust::make_zip_iterator(thrust::make_tuple(&dERzz[0]));
   auto d_ERzz_end   = thrust::make_zip_iterator(thrust::make_tuple(&dERzz[size]));
 
   thrust::host_vector<float> h_topResOut(size);
   thrust::host_vector<float> h_midResOut(size);
 
-  thrust::zip_iterator<thrust::tuple<
-  thrust::host_vector<float>::iterator,
-  thrust::host_vector<float>::iterator>> zip_begin(thrust::make_tuple(mid_Diag.begin(), top_Diag.begin()));
+  thrust::zip_iterator<thrust::tuple<thrust::host_vector<float>::iterator,thrust::host_vector<float>::iterator>> zip_begin(thrust::make_tuple(mid_Diag.begin(), top_Diag.begin()));
 
-  thrust::zip_iterator<thrust::tuple<
-  thrust::host_vector<float>::iterator,
-  thrust::host_vector<float>::iterator>> zip_end(thrust::make_tuple(mid_Diag.end(), top_Diag.end()));
+  thrust::zip_iterator<thrust::tuple<thrust::host_vector<float>::iterator,thrust::host_vector<float>::iterator>> zip_end(thrust::make_tuple(mid_Diag.end(), top_Diag.end()));
 
   auto d_divRes_begin = thrust::make_zip_iterator(thrust::make_tuple(h_midResOut.begin(), h_topResOut.begin()));
   auto d_divRes_end = thrust::make_zip_iterator(thrust::make_tuple(h_midResOut.end(), h_topResOut.end()));
@@ -409,36 +495,44 @@ int main() {
 
   thrust::host_vector<float> h_Avec;
 
-  thrust::for_each(d_divRes_begin, d_divRes_end-1,
+
+  //thrust::transform(top_Diag.begin(), top_Diag.end(), thrust::make_constant_iterator(dx), top_Diag.begin(), thrust::divides<float>());
+
+
+
+  thrust::for_each(d_divRes_begin, d_divRes_end,
                    [&h_Avec] (const thrust::tuple<float, float>& tup)
                    {
                        h_Avec.push_back(thrust::get<0>(tup));
                        h_Avec.push_back(thrust::get<1>(tup));
                    });
 
-  thrust::host_vector<float> h_Bvec(h_Avec.size());
-  thrust::copy(h_Avec.begin(), h_Avec.end(), h_Bvec.begin());
 
-  thrust::device_vector<float> d_Avec(h_Avec.size());
-  thrust::device_vector<float> d_Bvec(h_Avec.size());
+  thrust::device_vector<float> d_Avec(562);
 
-  thrust::copy(h_Avec.begin(), h_Avec.end(), d_Avec.begin());
-  thrust::copy(h_Bvec.begin(), h_Bvec.end(), d_Bvec.begin());
+  thrust::copy(h_Avec.begin(), h_Avec.end()-1, d_Avec.begin());
+
+
+
+
 
   //DO THE MULTIPLICATION
 
-  // 1. TWO MATRICES ARE NEEDED
-  //
-  // 2. THESE ARE SPARSE MATRICES MULTUPLY THEM BY THEIRS PATTERN
-  //    - SO FIRST CREATE THE RIGHT row_ptr AND col_ptr RESPECTIVELY
-  //    - FEED THEM INTO THE SPARSE-MATRIX CUDA-KERNEL - DONE <2023-02-21 Tue>
+  // 1. CREATE THE ARRAYS OUT OF TU
+  // {
+  // PLE STRUCTURE
+  // 2. CREATE THE row_prt and col_ptr ARRAYS
+
+  // 3. FEED INTO THE SPARSE MATRIX MULTIPLICATION
+
+//sizeof(thrust::get<0>(spMat)
 
   int* row_ptr;
   int* col_ptr;
   int* elem_scan;
 
-  int ptr_size = 841;
-  int ptr_size_buffer = 841+2;
+  int ptr_size = 842;
+  int ptr_size_buffer = 840;
   row_ptr   = (int *)malloc(ptr_size_buffer*sizeof(int));
   col_ptr   = (int *)malloc(ptr_size_buffer*sizeof(int));
   elem_scan = (int *)malloc(ptr_size_buffer*sizeof(int));
@@ -447,22 +541,22 @@ int main() {
 
   //float* d_A = thrust::raw_pointer_cast(d_Avec.data());
   //float* d_B = thrust::raw_pointer_cast(d_Bvec.data());
-  //cudaMemcpy(&d_A, &h_A, 2*size*sizeof(float), cudaMemcpyHostToDevice);
+  //cudaMemcpy(&d_A, &h_A, ptr_size*sizeof(float), cudaMemcpyHostToDevice);
 
   CreateElem_Scan(elem_scan,ptr_size);
-  CreateCol_Ptr(col_ptr, ptr_size);
-  CreateRow_Ptr(row_ptr, ptr_size);
-
+  kernelCols(col_ptr, ptr_size-1);
+  kernelRows(row_ptr, ptr_size-1);
+//
   int* d_col_ptr;
   int* d_row_ptr;
   int* d_elem_scan;
-
+//
   cudaMalloc((void**) &d_col_ptr, ptr_size*sizeof(int));
   cudaMalloc((void**) &d_row_ptr, ptr_size*sizeof(int));
   cudaMalloc((void**) &d_elem_scan, ptr_size*sizeof(int));
-
+//
   cudaMalloc((void**) &d_C, ptr_size*sizeof(float));
-
+//
   cudaMemcpy(d_col_ptr, col_ptr, ptr_size*sizeof(int), cudaMemcpyHostToDevice);
   cudaMemcpy(d_row_ptr, row_ptr, ptr_size*sizeof(int), cudaMemcpyHostToDevice);
   cudaMemcpy(d_elem_scan, elem_scan, ptr_size*sizeof(int), cudaMemcpyHostToDevice);
@@ -470,9 +564,20 @@ int main() {
   SpMM<<<1,ptr_size>>>(thrust::raw_pointer_cast(&d_Avec[0]),thrust::raw_pointer_cast(&d_Bvec[0]), d_C, ptr_size, d_elem_scan, d_row_ptr, d_col_ptr);
 //
   float* h_C;
-  h_C = (float *)malloc(3*size*sizeof(float));
+  h_C = (float *)malloc(ptr_size*sizeof(float));
 
   cudaMemcpy(h_C, d_C, ptr_size*sizeof(float), cudaMemcpyDeviceToHost);
+
+  thrust::host_vector<float> hURyy(size);
+  thrust::copy(dURyy.begin(), dURyy.end(), hURyy.begin());
+
+  DiagAdd(h_C, thrust::raw_pointer_cast(&hURyy[0]), ptr_size);
+
+
+  for(int i = 0; i <= ptr_size_buffer; ++i)
+      {
+          std::cout << "IdX " << i << ": " << h_C[i] <<", ";
+      }
 
 
   vectorInversion vecInv;
@@ -481,14 +586,38 @@ int main() {
 
   thrust::transform(dERzz.begin(), dERzz.end(), inv_dERzz.begin(), vecInv);
   //size_t n = sizeof(h_C)/sizeof(h_C[0]);
-  for(int i = 0; i < size -2; ++i)
-      {
-        std::cout << inv_dERzz[i] << ", " ;
-      }
-
-  //MISSING + ADDITION ON MID-DIAGONAL AND MULTIPLY BY -1
 
 
+  //NOW ALL WHAT IS LEFT TO DO IS GET THE CUDA-SOLVER TO WORK
+  //ARRAYS ARE READY LOCK' AND LOAD 'EM - ROCK 'N ROLL! <2023-02-27 Mon> shoshin
+  //PS: ADD THE CUDA-SOLVER TO THE NIX-SHELL!
+
+  cusolverSpHandle_t cusolverH = NULL;
+  csrqrInfo_t info = NULL;
+  cusparseMatDescr_t descrA  = NULL;
+  cudaStream_t stream = NULL;
+
+  //prepare Arrays for the solver to be loaded
+
+  int *d_csrRowPtrA = nullptr;
+  int *d_csrColIndA = nullptr;
+  double *d_csrValA = nullptr;
+
+  double *d_b = nullptr;
+  double *d_x = nullptr;
+
+  size_t size_qr = 0;
+  size_t size_internal = 0;
+
+  void *buffer_qr = nullptr;
+
+  const int i_m = size;
+  const int nnzA = 840;
+
+
+
+
+  //std::cout << top_Diag.size() + mid_Diag.size();
   cudaFree(d_col_ptr);
   cudaFree(d_row_ptr);
   cudaFree(d_elem_scan);
@@ -497,15 +626,6 @@ int main() {
   free(row_ptr);
   free(col_ptr);
   free(elem_scan);
-//sizeof(thrust::get<0>(spMat)
-
-//**************COMPUTE THE EIGENVALUES!**************
-  //INVOKE THE CUDA-SOLVER
-  //1. FEED THE MATRICES
-  //2. ... MORE FROM PREVIOUS COMMENT COMING SOON <2023-02-20 Mon> shoshin
-  //3. OBTAIN THE EIGENVALUES OF THE MATRIX
-
-
  // //thrust::copy(d_divRes.begin(), d_divRes.end(), std::ostream_iterator<float>(std::cout, " "));
  // thrust::for_each
  //std::cout << d.size()  << std::endl;
