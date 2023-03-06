@@ -294,25 +294,7 @@ void creatSeqPtrToCols(int *cols, int size)
             }
 }
 
-//CREATES A SEQUENCE THAT POINTS TO THE RIGHT COL-VALUE TO FULFILL THE diMatMulToTriMat-Function
-void kernelRows(int *rows, int size)
-    {
-
-    int inc = 0;
-    int k = 0;
-    while(k <size)
-        {
-            if((k!=0)&&(k%3==0))
-                {
-                rows[k] = inc-1;
-                ++k;
-                }
-            rows[k]=inc;
-            ++inc;
-            ++k;
-            }
-    }
-
+//CREATES A SEQUENCE THAT POINTS TO THE RIGHT ROW-VALUE TO FULFILL THE diMatMulToTriMat-Function
 void creatSeqPtrToRows(int *rows, int size)
     {
 
@@ -330,5 +312,6 @@ void creatSeqPtrToRows(int *rows, int size)
             ++k;
             }
     }
+
 
 #+end_src
