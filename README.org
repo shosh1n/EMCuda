@@ -55,7 +55,7 @@ int main() {
 |           |      |       |           |   |   |        |   |   |   |   |   |
 
 
-* Solving Maxwell's Equations for a 2D-Waveguide using CUDA/C
+* Highlighting of functions used
 #+begin_src cuda
 
 
@@ -74,22 +74,9 @@ int main() {
 #include <thrust/execution_policy.h>
 
 
-
-
-
-//Matrix Multiplication works as follows:
-//1. input the Arrays d_A, and
-//2.d_B that needs to be used
-//3. input the designated Array that shall be computed
-//4. set for the m colmuns of d_A
-//5. set for the n rows of d_B
-//6. set for the offset for elements in d_A that needs to be respected to stencil out the Matrix shape in row-major scheme
-//EXAMPLE: <letter>o</letter> = 4 for a Matrix d_A that is 4x2
-//6. set the row-major offest for the Matrix d_B using <letter>p</letter>
-//7. set the variable in the for-loop to the deepest increment in the respective dimension
-// Template structure to pass to kernel
+//USE TO IMPLICIT CONVERT THRUST::VECTORS TO ARRAY FOR CUDA-KERNELS
 template < typename T >
-struct KernelArray
+struct InputVectorToKernelArray
 {
 T* _array;
 int _size;
@@ -103,8 +90,24 @@ KernelArray(thrust::device_vector<T>& dVec) {
 };
 
 
+// SPARSE MATRIX DIVISION
+// SPARSE MATRIX-FORM IS IN TUPLE
+// DIVIDE THE TUPLE BY A 1D-SEQUENCE
+struct sparseDiMatrixDivision
+{
+    __host__ __device__
+    thrust::tuple<float,float> operator()(const thrust::tuple<float,float>& spMat, const thrust::tuple<float> &divi) const
+    {
+      auto out = thrust::make_tuple(thrust::get<0>(spMat)/thrust::get<0>(divi),thrust::get<1>(spMat)/thrust::get<0>(divi));
+      return out;
+    }
+
+};
 
 
+//TAKEN FROM: https://github.com/NVIDIA/thrust/blob/master/examples/strided_range.cu
+//CREATE A NEW SEQUENCE FROM AN EXISTING ONE.
+//NEW SEQUENCE IS DESGINED BY A CHOSEN STRIDE NUMBER TO SKIP X ELEMENTS FROM EXISTING SEQ
 template <typename Iterator>
 class strided_range
 {
@@ -153,10 +156,55 @@ class strided_range
     difference_type stride;
 };
 
+//CREATES A TRIANGULAR MATRIX FROM TWO MATRICES (SEQUENCES) IN COMPRESSED SPARSE ROW ORIENTATION
+__global__ void diMatMulToTriMat(float *d_A, float *d_B, float *d_C, int barrier, int* d_elem_scan, int *d_row_ptr, int *d_col_ptr)
+{
+int focus = blockIdx.x * blockDim.x + threadIdx.x;
+    if ((focus < barrier))
+        {
 
+        float temp = 0;
+        int k = 0;
+        int d_elem_start = d_elem_scan[focus];
+        int d_elem_end = d_elem_scan[focus+1];
 
+        int elem = d_elem_end - d_elem_start;
+        for(int i = 0; i < elem; i++)
+        {
+          //this is a temp fix because otherwise the wrong col-element gets pulled
+          //A fix will be implemented within generalized upcoming linear algebra routines
+          if(i==1)
+          {
+            temp += d_A[d_row_ptr[focus+i]] * d_B[d_col_ptr[focus+i+1]];
+          }
 
-__global__ void MatrixMulKernel(float* d_A, float *d_B, float *d_C, int m, int n, int o, int p)
+         else
+         {
+            temp += d_A[d_row_ptr[focus+i]] * d_B[d_col_ptr[focus+i]];
+         }
+            //DEBUGGING
+            //uncomment to see why the fix above is neccessary; the root of the problems lies within the combination of threading and loop-increment
+            //printf(" thread: %i  row: %i  col: %i  inc: %i escan: %i temp: %f \n", focus,d_row_ptr[focus +i], d_col_ptr[focus +i], i, elem, temp );
+        }
+        d_C[focus] = temp;
+        }
+}
+
+//ADDS A SEQUENCE TO THE DIAGONAL OF A TRIANGULAR MATRIX
+void triangularDiagAdd(float *diagonal, float* addMe, int diagSize )
+{
+
+    for(int diagIdx = 0; diagIdx < diagSize; ++diagIdx)
+        {
+                if(diagIdx % 3 == 0)
+                        {
+                            diagonal[diagIdx] =diagonal[diagIdx] + addMe[diagIdx/3];
+                        }
+        }
+}
+
+//MATRIX MULTIPLICATION VIA MULTI-THREADING ON A 2D-GRID
+__global__ void symmetricDenseMatrixMulKernel(float* d_A, float *d_B, float *d_C, int m, int n, int o, int p)
     {
 
         int row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -189,160 +237,98 @@ void print_matrix(const float *A, int nr_rows_A, int nr_cols_A) {
      std::cout << std::endl;
  }
 
-
-
-__global__ void createVector(float* d_A, float* d_C, int m, int n)
-{
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-    if( (row < m ) && (col < n))
+//CREATE A SEQUENCE TO CONTROL THE MULTIPLICATION INCREMENT FROM THE diMatMulToTriMat-Function
+void stepThroughTriElements(int *elem_list, int size)
+     {
+        int offset = 2;
+        int inc = 0;
+        int i = 0;
+        while (i < size)
         {
-            d_C[row*n+col] = 1;
-        }
-}
 
-__global__ void setElem(float* d_A, int start, int end, float d_a)
-    {
-        for(int i = start; i < end; ++i )
+            if(i == 0)
+                {
+                    elem_list[i]=0;
+                    ++i;
+                }
+
+            if(offset == 2)
             {
-               d_A[i] =  d_a;
+                inc +=2;
+                elem_list[i] = inc;
+                offset = 0;
+                ++i;
             }
 
+            else
+            {
+                ++inc;
+                elem_list[i] =inc;
+                ++offset;
+                ++i;
+            }
+        }
+
+     }
+
+//CREATES A SEQUENCE THAT POINTS TO THE RIGHT COL-VALUE TO FULFILL THE diMatMulToTriMat-Function
+void creatSeqPtrToCols(int *cols, int size)
+{
+    int barrier = 1;
+    int even = 2;
+    int normal = 0;
+    for(int i = 0;  i < size; ++i)
+        {
+            if((barrier) !=2 || (i == 0) ){
+                cols[i] = normal;
+                ++normal;
+                ++barrier;
+                }
+
+            else if((barrier == 2) &&( i != 0))
+            {
+                    cols[i]  = even;
+                    barrier=0;
+                    even+=2;
+            }
+            }
+}
+
+//CREATES A SEQUENCE THAT POINTS TO THE RIGHT COL-VALUE TO FULFILL THE diMatMulToTriMat-Function
+void kernelRows(int *rows, int size)
+    {
+
+    int inc = 0;
+    int k = 0;
+    while(k <size)
+        {
+            if((k!=0)&&(k%3==0))
+                {
+                rows[k] = inc-1;
+                ++k;
+                }
+            rows[k]=inc;
+            ++inc;
+            ++k;
+            }
     }
 
+void creatSeqPtrToRows(int *rows, int size)
+    {
 
-float micrometers = 1;
-float nanometers = 1e-3 * micrometers;
-// WAVELENGTH AND MODE
-float lam0 = 1.55 * micrometers; //
-char MODE = 'H';
-
-// SLAB WAVEGUIDE
-float a = 1500 * nanometers;
-float n1 = 1.0;
-float n2 = 2.0;
-float n3 = 1.5;
-
-// GRID PARAMETERS
-float nmax = n2;
-float NRES = 20;    // 56.888990026/2;
-float b = 3 * lam0; // 3
-
-// NUMBER OF MODES TO CALCULATE
-float NMODES = 4;
-
-
-int m = 1;
-
-float dx = lam0 / nmax / NRES;
-float nx = ceil(a / dx);
-
-float Sx = b + a + b;
-float Nx = ceil(Sx/dx);
-
-
-//<---------------------Execute-------------------->
-
-dim3 threads(150,150);
-dim3 blocks(2,2);
-
-
-int main()
-{
-
-    dx = a / nx;
-
-    Sx = Nx * dx;
-    Nx = ceil(Sx/dx);
-    Sx = Nx * dx;
-
-    float Nx2 = 2*Nx;
-    float dx2 = dx/2;
-
-  //  thrust::fill(xa.begin(), xa.end(),1);
-
-    //CREATE X-AXIS
-    thrust::device_vector<float>xa(Nx+2);
-
-    //AXIS STARTS AT 1 to 284
-    thrust::counting_iterator<float> iter(1);
-    thrust::copy(iter, iter + xa.size(), xa.begin());
-
-    //MULTIPLY AXIS-UNITS WITH THE STEPSIZE " dx "
-    thrust::transform(xa.begin(), xa.end(), thrust::make_constant_iterator(dx), xa.begin(), thrust::multiplies<float>());
-
-    //INITIALIZE ARRAY WITH ONES
-    thrust::device_vector<float> m_xa(Nx) ;
-    thrust::fill(m_xa.begin(), m_xa.end(),1);
-
-    //CALCULATE MEAN OF THE THE STEP-SIZE-ARRAY SCALE
-    float xmean = thrust::reduce(xa.begin(), xa.end())/281;
-
-    //SUBSTRACT THE MEAN FROM THE STEP-SIZE ARRAY
-    using namespace thrust::placeholders;
-    thrust::for_each(xa.begin(), xa.end(), _1 -= xmean);
-
-    //CREATE MAGNETIC AND ELECTRIC ARRAY
-    thrust::device_vector<float>ER2(Nx2);
-    thrust::device_vector<float>UR2(Nx2);
-
-    //DETERMINE THE ARRAY STARTING POSITIONS
-    float nx1 = 1 + ceil(b/dx);
-    float nx2 = 1 + round(b/dx2)-1;
-
-
-    //BUILD SLAB WAVEGUIDE
-    thrust::fill(ER2.begin(), ER2.begin() + (nx1), n1 * n1);
-    thrust::fill(ER2.begin() + nx1, ER2.end() - nx2, n2 * n2);
-    thrust::fill(ER2.end() - (nx2), ER2.end(), n3 * n3);
-
-    //EXTRACT YEE GRID ARRAYS
-
-    typedef thrust::device_vector<float>::iterator Iterator;
-    strided_range<Iterator> ERxx(ER2.begin()+1, ER2.end(), 2);
-    strided_range<Iterator> ERyy(ER2.begin(), ER2.end(), 2);
-    strided_range<Iterator> ERzz(ER2.begin(), ER2.end(), 2);
-
-    thrust::device_vector<float> dERxx(Nx2*Nx2);
-    thrust::copy(thrust::device, ERxx.begin(), ERxx.end(), dERxx.begin());
-
-    thrust::device_vector<float> dERxx2(Nx2*Nx2);
-    thrust::copy(thrust::device, ERxx.begin(), ERxx.end(), dERxx2.begin());
-
-    float *d_C; // *d_A, *d_B;
-
- //   cudaMalloc(&d_A, size*sizeof(int));
- //   cudaMalloc(&d_B, size*sizeof(int));
-      cudaMalloc(&d_C, Nx2*Nx2*sizeof(int));
-
- //   cudaMemcpy(d_A, h_A, size*sizeof(int), cudaMemcpyHostToDevice);
- //   cudaMemcpy(d_B, h_B, size*sizeof(int), cudaMemcpyHostToDevice);
-
-
-
-
-
-    //1.) input:d_A 2.)input:d_B 3.)input:d_C 4.)cols d_A 5.)rows d_B 6.)deepest increment cols_A 7.)deepest increments rows rows_B
-
-    MatrixMulKernel<<<threads,blocks>>>(thrust::raw_pointer_cast(&dERxx[0]), thrust::raw_pointer_cast(&dERxx2[0]), d_C, 1 , 1, 1, Nx2/2);
-
-     float *h_C = (float *)malloc(Nx2*Nx2 * sizeof(int));
-
-     cudaMemcpy(h_C, d_C, Nx2*Nx2 *sizeof(int), cudaMemcpyDeviceToHost);
-
-
-
-     print_matrix(h_C, Nx2/2, Nx2/2);
-
- //   cudaFree(d_A);
- //   cudaFree(d_B);
-    cudaFree(d_C);
-
-    free(h_C);
-
-    return 0;
-
-
-}
+    int inc = 0;
+    int k = 0;
+    while(k <size)
+        {
+            if((k!=0)&&(k%3==0))
+                {
+                rows[k] = inc-1;
+                ++k;
+                }
+            rows[k]=inc;
+            ++inc;
+            ++k;
+            }
+    }
 
 #+end_src

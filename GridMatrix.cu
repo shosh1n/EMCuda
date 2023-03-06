@@ -70,7 +70,7 @@ protected:
 };
 
 // SPARSE MATRIX DIVISION
-struct sparseDivision
+struct sparseDiMatrixDivision
 {
     __host__ __device__
     thrust::tuple<float,float> operator()(const thrust::tuple<float,float>& spMat, const thrust::tuple<float> &divi) const
@@ -83,7 +83,7 @@ struct sparseDivision
 
 // SPARSE MATRIX MULTIPLICATION
 
-__global__ void SpMM(float *d_A, float *d_B, float *d_C, int barrier, int* d_elem_scan, int *d_row_ptr, int *d_col_ptr)
+__global__ void diMatMulToTriMat(float *d_A, float *d_B, float *d_C, int barrier, int* d_elem_scan, int *d_row_ptr, int *d_col_ptr)
 {
 int focus = blockIdx.x * blockDim.x + threadIdx.x;
     if ((focus < barrier))
@@ -114,9 +114,9 @@ int focus = blockIdx.x * blockDim.x + threadIdx.x;
         }
         d_C[focus] = temp;
         }
-    }
+}
 
-void DiagAdd(float *diagonal, float* addMe, int diagSize )
+void triangularDiagAdd(float *diagonal, float* addMe, int diagSize )
 {
 
     for(int diagIdx = 0; diagIdx < diagSize; ++diagIdx)
@@ -128,68 +128,7 @@ void DiagAdd(float *diagonal, float* addMe, int diagSize )
         }
 }
 
-//// Sequences for Matrix-Elements outside of CUDA-Kernels
-//void CreateRow_Ptr(int* h_rows,int size)
-//     {
-//        int input = 1;
-//        for (int  i = 0; i < size; i+=2)
-//        {
-//            if(i == 0)
-//                {
-//                h_rows[i] = 0;
-//                }
-//            for(int k = 1; k < 3; ++k)
-//                {
-//                    h_rows[i+k] = input;
-//                }
-//            ++input;
-//        }
-//     }
-//
-//void CreateCol_Ptr(int* h_cols, int size)
-//     {
-//         bool focus;
-//         int barrier = 4;
-//         int elem1 = 1;
-//         int elem2 = 1;
-//
-//         h_cols[0] =0;
-//         int i = 1;
-//
-//         while(i < size)
-//         {
-//             if(barrier > 2)
-//             {
-//                 h_cols[i] = elem1;
-//                 ++elem1;
-//                 barrier--;
-//                 focus = false;
-//                 ++i;
-//             }
-//
-//             if(barrier == 2)
-//             {
-//                 if(focus == false)
-//                     barrier = 0;
-//
-//                 if(focus == true)
-//                     barrier = 4;
-//             }
-//
-//             if( barrier < 2)
-//             {
-//                 h_cols[i] = elem2;
-//                 ++elem2;
-//                 ++barrier;
-//                 focus = true;
-//                 ++i;
-//             }
-//
-//         }
-//     }
-//
-//
-void CreateElem_Scan(int *elem_list, int size)
+void stepThroughTriElements(int *elem_list, int size)
      {
         int offset = 2;
         int inc = 0;
@@ -248,7 +187,7 @@ void print_matrix(const V &A, int nr_rows_A, int nr_cols_A) {
 }
 
 //Sequence for Col-Elements in threading scheme
-void kernelCols(int *cols, int size)
+void creatSeqPtrToCols(int *cols, int size)
 {
     int barrier = 1;
     int even = 2;
@@ -271,7 +210,7 @@ void kernelCols(int *cols, int size)
 }
 
 //Sequence for Row-Elements in threading scheme
-void kernelRows(int *rows, int size)
+void creatSeqPtrToRows(int *rows, int size)
     {
 
     int inc = 0;
@@ -489,7 +428,7 @@ int main() {
   auto d_divRes_end = thrust::make_zip_iterator(thrust::make_tuple(h_midResOut.end(), h_topResOut.end()));
 
   //GET THE DIVISION FUNCTOR READY AND DIVIDE
-  sparseDivision divByERzz;
+  sparseDiMatrixDivision divByERzz;
 
   thrust::transform(zip_begin, zip_end, d_ERzz_begin, d_divRes_begin, divByERzz);
 
@@ -543,9 +482,9 @@ int main() {
   //float* d_B = thrust::raw_pointer_cast(d_Bvec.data());
   //cudaMemcpy(&d_A, &h_A, ptr_size*sizeof(float), cudaMemcpyHostToDevice);
 
-  CreateElem_Scan(elem_scan,ptr_size);
-  kernelCols(col_ptr, ptr_size-1);
-  kernelRows(row_ptr, ptr_size-1);
+  stepThroughTriElements(elem_scan,ptr_size);
+  creatSeqPtrToCols(col_ptr, ptr_size-1);
+  creatSeqPtrToRows(row_ptr, ptr_size-1);
 //
   int* d_col_ptr;
   int* d_row_ptr;
@@ -561,7 +500,7 @@ int main() {
   cudaMemcpy(d_row_ptr, row_ptr, ptr_size*sizeof(int), cudaMemcpyHostToDevice);
   cudaMemcpy(d_elem_scan, elem_scan, ptr_size*sizeof(int), cudaMemcpyHostToDevice);
 
-  SpMM<<<1,ptr_size>>>(thrust::raw_pointer_cast(&d_Avec[0]),thrust::raw_pointer_cast(&d_Bvec[0]), d_C, ptr_size, d_elem_scan, d_row_ptr, d_col_ptr);
+  diMatMulToTriMat<<<1,ptr_size>>>(thrust::raw_pointer_cast(&d_Avec[0]),thrust::raw_pointer_cast(&d_Bvec[0]), d_C, ptr_size, d_elem_scan, d_row_ptr, d_col_ptr);
 //
   float* h_C;
   h_C = (float *)malloc(ptr_size*sizeof(float));
@@ -571,7 +510,7 @@ int main() {
   thrust::host_vector<float> hURyy(size);
   thrust::copy(dURyy.begin(), dURyy.end(), hURyy.begin());
 
-  DiagAdd(h_C, thrust::raw_pointer_cast(&hURyy[0]), ptr_size);
+  triangularDiagAdd(h_C, thrust::raw_pointer_cast(&hURyy[0]), ptr_size);
 
 
   for(int i = 0; i <= ptr_size_buffer; ++i)
