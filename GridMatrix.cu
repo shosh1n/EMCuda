@@ -22,8 +22,11 @@
 #include <vector>
 #include <cusolverSp.h>
 #include <cusparse.h>
-#include "cusolver_utils.h"
 
+
+//This File is a mess! clean it up!
+//seperate the methods that act on certain elements into
+//an own module
 template <typename Iterator> class strided_range {
 public:
   typedef typename thrust::iterator_difference<Iterator>::type difference_type;
@@ -174,7 +177,6 @@ struct vectorInversion
 };
 
 template <typename V>
-
 void print_matrix(const V &A, int nr_rows_A, int nr_cols_A) {
 
   for (int i = 0; i < nr_rows_A; ++i) {
@@ -552,9 +554,6 @@ int main() {
 
   const int i_m = size;
   const int nnzA = 840;
-
-
-
 
   //std::cout << top_Diag.size() + mid_Diag.size();
   cudaFree(d_col_ptr);
